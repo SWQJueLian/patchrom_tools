@@ -10,6 +10,7 @@ OTA_FROM_TARGET_FILES=$TOOL_DIR/releasetools/ota_from_target_files
 SIGN_TARGET_FILES_APKS=$TOOL_DIR/releasetools/sign_target_files_apks
 OUT_ZIP_FILE=
 NO_SIGN=false
+CERTIFICATE_DIR=$PORT_ROOT/build/security
 
 APKCERT=$PORT_ROOT/miui/metadata/apkcert.txt
 if [ "$USE_ANDROID_OUT" == "true" ];then
@@ -87,20 +88,39 @@ function zip_target_files {
 
 function sign_target_files {
     echo "Sign target files"
-    $SIGN_TARGET_FILES_APKS -d $PORT_ROOT/build/security $TARGET_FILES_ZIP temp.zip
+    $SIGN_TARGET_FILES_APKS -d $CERTIFICATE_DIR $TARGET_FILES_ZIP temp.zip
     mv temp.zip $TARGET_FILES_ZIP
 }
 
 # build a new full ota package
 function build_ota_package {
     echo "Build full ota package: $OUT_DIR/$OUT_ZIP_FILE"
-    $OTA_FROM_TARGET_FILES -n -k $PORT_ROOT/build/security/testkey $TARGET_FILES_ZIP $OUT_DIR/$OUT_ZIP_FILE
+    $OTA_FROM_TARGET_FILES -n -k $CERTIFICATE_DIR/testkey $TARGET_FILES_ZIP $OUT_DIR/$OUT_ZIP_FILE
 }
 
+function adjust_replace_key_script {
+    if [ "$CERTIFICATE_DIR" != "$PORT_ROOT/build/security" -a -f "$CERTIFICATE_DIR/platform.x509.pem" \
+        -a -f "$CERTIFICATE_DIR/shared.x509.pem" -a -f "$CERTIFICATE_DIR/media.x509.pem" -a -f "$CERTIFICATE_DIR/shared.x509.pem" ];then
+        platform_cert=$(cat $CERTIFICATE_DIR/platform.x509.pem | sed 's/-----/#/g' | cut -d'#' -f1 | tr -d ["\n"] | base64 --decode | hexdump -v -e '/1 "%02x"')
+        sed -i "s/@user_platform/$platform_cert/g" out/target_files/OTA/bin/replace_key
+        shared_cert=$(cat $CERTIFICATE_DIR/shared.x509.pem | sed 's/-----/#/g' | cut -d'#' -f1 | tr -d ["\n"] | base64 --decode | hexdump -v -e '/1 "%02x"')
+        sed -i "s/@user_shared/$shared_cert/g" out/target_files/OTA/bin/replace_key
+        media_cert=$(cat $CERTIFICATE_DIR/media.x509.pem | sed 's/-----/#/g' | cut -d'#' -f1 | tr -d ["\n"] | base64 --decode | hexdump -v -e '/1 "%02x"')
+        sed -i "s/@user_media/$media_cert/g" out/target_files/OTA/bin/replace_key
+        testkey_cert=$(cat $CERTIFICATE_DIR/shared.x509.pem | sed 's/-----/#/g' | cut -d'#' -f1 | tr -d ["\n"] | base64 --decode | hexdump -v -e '/1 "%02x"')
+        sed -i "s/@user_testkey/$testkey_cert/g" out/target_files/OTA/bin/replace_key
+    else
+        rm -rf out/target_files/OTA/bin/replace_key
+    fi
+}
 
 if [ $# -eq 3 ];then
-    NO_SIGN=true
     OUT_ZIP_FILE=$3
+    if [ "$2" == "-n" ];then
+        NO_SIGN=true
+    elif [ -n "$2" ];then
+        CERTIFICATE_DIR=$2
+    fi
     INCLUDE_THIRDPART_APP=$1
 elif [ $# -eq 2 ];then
     OUT_ZIP_FILE=$2
@@ -109,7 +129,13 @@ elif [ $# -eq 1 ];then
     INCLUDE_THIRDPART_APP=$1
 fi
 
+#Set certificate pass word
+if [ -f "$CERTIFICATE_DIR/passwd" ];then
+    export ANDROID_PW_FILE=$CERTIFICATE_DIR/passwd
+fi
+
 copy_target_files_template
+adjust_replace_key_script
 copy_bootimage
 copy_system_dir
 copy_data_dir
